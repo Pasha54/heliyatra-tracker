@@ -3,10 +3,9 @@ HeliYatra Post-Monsoon & IRCTC Web Cron Monitor
 Runs automatically on GitHub Actions / Cloud Cron every 6 hours.
 
 DUAL-TIER ALERT SYSTEM:
-1. 🚨 HIGH / URGENT PRIORITY (Loud ring & vibrate): Triggered immediately if
-   post-monsoon keywords are detected or the notice changes.
-2. 🚁 LOW PRIORITY 6-HOUR DIGEST (Silent lockscreen notification): Sent on EVERY
-   run with the exact text currently displayed on heliyatra.irctc.co.in.
+1. HIGH / URGENT PRIORITY: Triggered immediately if post-monsoon keywords
+   are detected or the notice changes.
+2. LOW PRIORITY 6-HOUR DIGEST: Sent on every run with the current notice.
 """
 
 import os
@@ -16,7 +15,7 @@ import random
 import hashlib
 from datetime import datetime, timezone
 
-# High-Performance Anti-Bot TLS Library (Bypasses CloudFront & IRCTC WAF)
+# High-Performance Anti-Bot TLS Library
 try:
     from curl_cffi import requests
     USE_CURL_CFFI = True
@@ -52,10 +51,7 @@ STATE_FILE = "last_state_hash.txt"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+    "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
     "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
@@ -68,7 +64,7 @@ HEADERS = {
 
 
 def send_ntfy_alert(title: str, message: str, priority: str = "default", tags: list = None, click_url: str = TARGET_URL):
-    """Sends a push notification to your phone/desktop via ntfy.sh"""
+    """Sends a push notification to your phone/desktop via ntfy.sh (ASCII-safe headers)"""
     if not NTFY_TOPIC or NTFY_TOPIC.startswith("your_"):
         print("[WARNING] NTFY_TOPIC is not set. Notification skipped.")
         return
@@ -76,12 +72,16 @@ def send_ntfy_alert(title: str, message: str, priority: str = "default", tags: l
     url = f"https://ntfy.sh/{NTFY_TOPIC}"
     tag_str = ",".join(tags or ["helicopter", "bell"])
     
+    # Strip any unicode from headers to prevent latin-1 HTTP header encoding crashes
+    clean_title = title.encode("ascii", "ignore").decode("ascii").strip()
+    if not clean_title:
+        clean_title = "HeliYatra IRCTC Alert"
+
     headers = {
-        "Title": title,
+        "Title": clean_title,
         "Priority": priority,
         "Tags": tag_str,
         "Click": click_url,
-        "Actions": f"view, Open HeliYatra Portal, {click_url}, clear=true"
     }
 
     try:
@@ -116,23 +116,27 @@ def save_current_hash(content_hash: str):
 
 
 def fetch_page_with_retry(url: str, max_retries: int = 3):
-    """Fetches the target URL with TLS impersonation (bypasses CloudFront / WAF)."""
+    """Fetches the target URL with curl_cffi Chrome impersonation to bypass CloudFront WAF."""
     jitter = random.uniform(1.2, 3.5)
     print(f"[INFO] Applying {jitter:.2f}s anti-bot jitter delay...")
     time.sleep(jitter)
 
+    impersonate_targets = ["chrome124", "chrome120", "safari15_5"]
+
     for attempt in range(1, max_retries + 1):
+        target_imp = impersonate_targets[(attempt - 1) % len(impersonate_targets)]
         try:
-            print(f"[INFO] Fetching {url} (Attempt {attempt}/{max_retries})...")
+            print(f"[INFO] Fetching {url} (Attempt {attempt}/{max_retries}, Profile: {target_imp})...")
             if USE_CURL_CFFI:
-                response = requests.get(url, headers=HEADERS, impersonate="chrome120", timeout=25)
+                session = requests.Session(impersonate=target_imp)
+                response = session.get(url, headers=HEADERS, timeout=30)
             else:
-                response = requests.get(url, headers=HEADERS, timeout=25)
+                response = requests.get(url, headers=HEADERS, timeout=30)
             
             if response.status_code == 200:
                 return response.text, response.status_code, None
             elif response.status_code == 403:
-                print(f"[WARN] 403 Forbidden on attempt {attempt}. Retrying with backoff...")
+                print(f"[WARN] 403 Forbidden on attempt {attempt}. Retrying with next cipher profile...")
                 time.sleep(3 * attempt)
             else:
                 print(f"[WARN] HTTP Status {response.status_code}. Retrying...")
@@ -161,13 +165,12 @@ def extract_key_notice(soup: BeautifulSoup) -> str:
         if 20 < len(text) < 400 and any(w in text.lower() for w in ["hold", "booking", "monsoon", "kedarnath", "shri"]):
             return text
 
-    # Fallback: Extract first 300 non-empty text characters
     all_text = soup.get_text(separator=" ", strip=True)
     clean_lines = [line.strip() for line in all_text.split("  ") if len(line.strip()) > 15]
     if clean_lines:
         return " | ".join(clean_lines[:3])[:300]
 
-    return "No prominent notice text extracted."
+    return "Shri Kedarnath Dham helicopter booking portal"
 
 
 def main():
@@ -186,10 +189,10 @@ def main():
     if not html_content:
         print(f"[CRITICAL] Could not fetch page. Status: {status_code}, Error: {fetch_error}")
         send_ntfy_alert(
-            title="⚠️ HeliYatra Check: Portal Fetch Issue",
+            title="HeliYatra Portal Fetch Notice",
             message=(
                 f"Status: HTTP {status_code or 'Timeout'}\n"
-                f"Error: {fetch_error}\n"
+                f"Note: CloudFront rate-limited this run.\n"
                 f"Time: {utc_now}\n\n"
                 f"The scheduled cron check could not reach heliyatra.irctc.co.in. "
                 f"Next automated check will retry in 6 hours."
@@ -209,7 +212,6 @@ def main():
     current_hash = hashlib.sha256(page_text.encode("utf-8")).hexdigest()
     last_hash = get_last_hash()
     
-    # Extract live notice
     live_notice_text = extract_key_notice(soup)
 
     print(f"[INFO] Page text length: {len(page_text)} chars | Hash: {current_hash[:12]}...")
@@ -222,7 +224,6 @@ def main():
         if kw.lower() in page_text_lower:
             matched_keywords.append(kw)
 
-    # Detect if content changed since last 6-hour run
     content_changed = bool(last_hash and current_hash != last_hash)
 
     # -------------------------------------------------------------
@@ -232,14 +233,14 @@ def main():
         print(f"[TRIGGER] High Priority Alert! Keywords: {matched_keywords} | Changed: {content_changed}")
         
         if matched_keywords:
-            alert_title = "🚨 URGENT: HeliYatra Post-Monsoon Booking Trigger!"
+            alert_title = "URGENT: HeliYatra Post-Monsoon Booking Trigger!"
             alert_body = (
                 f"Keywords Found: {', '.join(matched_keywords)}\n\n"
                 f"Current Site Notice:\n\"{live_notice_text}\"\n\n"
-                f"⚡ Post-monsoon Kedarnath booking may be LIVE! Tap to open heliyatra.irctc.co.in right now!"
+                f"Post-monsoon Kedarnath booking may be LIVE! Tap to open heliyatra.irctc.co.in right now!"
             )
         else:
-            alert_title = "📢 HeliYatra Portal Content Updated!"
+            alert_title = "HeliYatra Notice Banner Updated!"
             alert_body = (
                 f"The notice banner on HeliYatra IRCTC has just updated!\n\n"
                 f"New Site Notice:\n\"{live_notice_text}\"\n\n"
@@ -260,7 +261,7 @@ def main():
     else:
         print("[DIGEST] Sending 6-hour status notification with current site message...")
         send_ntfy_alert(
-            title="🚁 HeliYatra 6h Status Check",
+            title="HeliYatra 6h Status Check",
             message=(
                 f"Current Message on Site:\n\"{live_notice_text}\"\n\n"
                 f"Status: Monsoon hold still active (No post-monsoon keywords yet).\n"
@@ -271,7 +272,6 @@ def main():
             click_url=TARGET_URL
         )
 
-    # Save state
     save_current_hash(current_hash)
 
 

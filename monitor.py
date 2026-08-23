@@ -1,13 +1,20 @@
+"""
+HeliYatra Post-Monsoon Cron Watcher (CloudFront 403 Bypass)
+Runs on GitHub Actions every 6 hours and pushes notifications to ntfy.sh
+"""
+
 import os
+import sys
 import time
 import random
+import urllib.request
 import requests
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
 
-# Put your preferred topic name here:
-NTFY_TOPIC = "heliyatra_postmonsoon_alert_2026"
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "heliyatra_postmonsoon_alert_2026")
 TARGET_URL = "https://heliyatra.irctc.co.in"
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 
 KEYWORDS = [
     "post monsoon",
@@ -21,64 +28,131 @@ KEYWORDS = [
 ]
 
 def send_alert(title, message, priority="low"):
-    """Sends notification to ntfy.sh without any emoji in headers to prevent latin-1 crashes."""
+    """Sends notification to ntfy.sh with clean ASCII headers."""
     try:
+        clean_title = title.encode("ascii", "ignore").decode("ascii").strip() or "HeliYatra Alert"
         url = f"https://ntfy.sh/{NTFY_TOPIC}"
         headers = {
-            "Title": title,
+            "Title": clean_title,
             "Priority": priority,
             "Click": TARGET_URL,
         }
         resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=15)
-        print(f"NTFY response: {resp.status_code}")
+        print(f"[NTFY] Push status: {resp.status_code}")
     except Exception as e:
-        print(f"Failed to send to ntfy: {e}")
+        print(f"[NTFY ERROR] {e}")
+
+
+def fetch_via_scraperapi(key):
+    """Bypasses CloudFront WAF using free ScraperAPI Indian exit nodes."""
+    print("[INFO] Attempting fetch via ScraperAPI (India node)...")
+    proxy_url = f"https://api.scraperapi.com?api_key={key}&url={TARGET_URL}&country_code=in"
+    resp = requests.get(proxy_url, timeout=35)
+    return resp.text, resp.status_code
+
+
+def fetch_via_indian_proxy():
+    """Fetches public Indian HTTP proxies and tries connecting through them."""
+    print("[INFO] Fetching free Indian proxy list...")
+    try:
+        list_url = "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&country=IN&protocol=http&timeout=7000&proxy_format=ipport"
+        req = urllib.request.Request(list_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            proxies = [p.strip() for p in r.read().decode("utf-8").splitlines() if ":" in p]
+    except Exception as e:
+        print(f"[WARN] Could not load proxy list: {e}")
+        proxies = []
+
+    for proxy in proxies[:4]:
+        try:
+            print(f"[INFO] Testing Indian proxy {proxy}...")
+            resp = requests.get(
+                TARGET_URL,
+                proxies={"http": f"http://{proxy}", "https": f"http://{proxy}"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                return resp.text, 200
+        except Exception:
+            continue
+    return None, 403
+
+
+def fetch_page():
+    """Attempts direct Chrome impersonation -> ScraperAPI -> Free Indian Proxy."""
+    # 1. Try direct Chrome TLS
+    try:
+        print("[INFO] Trying direct Chrome TLS impersonation...")
+        resp = cffi_requests.get(TARGET_URL, impersonate="chrome120", timeout=20)
+        if resp.status_code == 200:
+            return resp.text, 200
+        print(f"[WARN] Direct access returned HTTP {resp.status_code} (CloudFront geo-block).")
+    except Exception as e:
+        print(f"[WARN] Direct access error: {e}")
+
+    # 2. Try ScraperAPI if key is present
+    if SCRAPER_API_KEY:
+        try:
+            return fetch_via_scraperapi(SCRAPER_API_KEY)
+        except Exception as e:
+            print(f"[WARN] ScraperAPI failed: {e}")
+
+    # 3. Fallback to free Indian proxies
+    return fetch_via_indian_proxy()
+
 
 def main():
-    print(f"Checking {TARGET_URL} with Chrome impersonation...")
-    time.sleep(random.uniform(1.0, 2.5))
-    
-    try:
-        # Uses real Chrome TLS handshake to bypass CloudFront WAF
-        resp = cffi_requests.get(TARGET_URL, impersonate="chrome120", timeout=25)
-        print(f"HTTP Status: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            send_alert("HeliYatra Check Notice", f"HTTP Status {resp.status_code} received when accessing portal.", priority="low")
-            return
+    print("=" * 60)
+    print(f"Checking HeliYatra: {TARGET_URL}")
+    print("=" * 60)
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
+    html_content, status_code = fetch_page()
 
-        page_text = soup.get_text(separator=" ", strip=True)
-        page_text_lower = page_text.lower()
-        
-        # Look for keywords
-        matched = [k for k in KEYWORDS if k in page_text_lower]
-        
-        # Get a readable preview of the notice banner
-        lines = [line.strip() for line in page_text.split("  ") if len(line.strip()) > 20]
-        preview_text = "\n".join(lines[:4]) if lines else "Site accessed successfully."
+    if not html_content or status_code != 200:
+        print(f"[CRITICAL] Portal returned HTTP {status_code}.")
+        send_alert(
+            "HeliYatra 6h Check Notice",
+            f"Portal check returned HTTP {status_code} (CloudFront protected).\n"
+            f"If persistent, add a free SCRAPER_API_KEY in GitHub Secrets.\n"
+            f"Next automated check will run in 6 hours.",
+            priority="low"
+        )
+        return
 
-        if matched:
-            print(f"KEYWORDS DETECTED: {matched}")
-            send_alert(
-                "URGENT: HeliYatra Booking Trigger",
-                f"Matched keywords: {', '.join(matched)}\n\nNotice:\n{preview_text[:350]}\n\nTap to open portal now!",
-                priority="urgent"
-            )
-        else:
-            print("No new post-monsoon keywords. Sending 6-hour digest.")
-            send_alert(
-                "HeliYatra 6h Status Digest",
-                f"Current Site Notice:\n{preview_text[:350]}\n\nStatus: Monsoon hold still active.",
-                priority="low"
-            )
+    soup = BeautifulSoup(html_content, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
 
-    except Exception as e:
-        print(f"Scraper error: {e}")
-        send_alert("HeliYatra Fetch Error", f"Error accessing site: {e}", priority="low")
+    page_text = soup.get_text(separator=" ", strip=True)
+    page_text_lower = page_text.lower()
+
+    # Search for keywords
+    matched = [k for k in KEYWORDS if k in page_text_lower]
+
+    lines = [line.strip() for line in page_text.split("  ") if len(line.strip()) > 15]
+    live_notice = "\n".join(lines[:4]) if lines else "Site accessed successfully."
+
+    print(f"[SUCCESS] Page loaded! Length: {len(page_text)} chars")
+
+    if matched:
+        print(f"[TRIGGER] Post-monsoon keywords found: {matched}")
+        send_alert(
+            "URGENT: HeliYatra Booking Trigger!",
+            f"Keywords detected: {', '.join(matched)}\n\n"
+            f"Live Notice:\n{live_notice[:350]}\n\n"
+            f"Tap to open heliyatra.irctc.co.in now!",
+            priority="urgent"
+        )
+    else:
+        print("[DIGEST] No post-monsoon keywords yet. Sending 6-hour digest.")
+        send_alert(
+            "HeliYatra 6h Status Digest",
+            f"Current Notice on Site:\n{live_notice[:350]}\n\n"
+            f"Status: Monsoon hold still active (Booking closed).",
+            priority="low"
+        )
+
 
 if __name__ == "__main__":
     main()

@@ -2,7 +2,7 @@ name: HeliYatra 6-Hour Cron Watcher
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Runs every 6 hours
+    - cron: '*/5 */6 * * *'  # Runs every 6 hours
   workflow_dispatch:        # Allows manual 1-click run
 
 jobs:

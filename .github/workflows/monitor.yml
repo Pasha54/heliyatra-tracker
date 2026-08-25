@@ -2,7 +2,7 @@ name: HeliYatra 6-Hour Cron Watcher
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 jobs:
@@ -20,11 +20,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests beautifulsoup4 curl_cffi
+          pip install requests beautifulsoup4
 
       - name: Run HeliYatra Monitor
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC || 'heliyatra_postmonsoon_alert_2026' }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
         run: |
-          python -c "import curl_cffi; print('curl_cffi loaded successfully!')"
           if [ -f ".github/workflows/monitory.py" ]; then
             python .github/workflows/monitory.py
           elif [ -f ".github/workflows/monitor.py" ]; then

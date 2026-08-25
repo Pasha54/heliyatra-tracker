@@ -1,7 +1,6 @@
 """
-HeliYatra Post-Monsoon Watcher (Scrape.do + WhatsApp Template + ntfy.sh)
-- Uses WhatsApp 'template' payload (bypasses 24-hour window error 131047)
-- Instant URGENT alert when the portal baseline updates
+HeliYatra Post-Monsoon Watcher (Scrape.do + WhatsApp Custom Template + ntfy.sh)
+Uses the 'heliyatra_update' custom template with compliant Meta formatting.
 """
 
 import os
@@ -26,10 +25,10 @@ NTFY_TOPIC = os.getenv("NTFY_TOPIC", "heliyatra_postmonsoon_alert_2026").strip()
 KNOWN_BASELINE_SNIPPET = "Shri Hemkund Sahib Helicopter ticket bookings are temporarily on hold till further instructions"
 
 
-def send_meta_whatsapp_template():
+def send_meta_whatsapp_custom_template(status_header: str, details_text: str):
     """
-    Sends WhatsApp message using Meta's pre-approved 'hello_world' template.
-    Bypasses the 24-hour customer window constraint (Error 131047).
+    Sends WhatsApp message using custom 'heliyatra_update' template with dynamic parameters.
+    Bypasses the 24h conversation window and delivers custom text 24/7.
     """
     if not (WA_TOKEN and WA_PHONE_ID and WA_RECIPIENT):
         print("[WHATSAPP] Skipping: Missing WA_TOKEN, WA_PHONE_ID, or WA_RECIPIENT.")
@@ -42,16 +41,31 @@ def send_meta_whatsapp_template():
         "Content-Type": "application/json"
     }
 
-    # Meta pre-approved template payload (delivers 24/7 anytime)
+    # Pass dynamic text into {{1}} and {{2}} of template 'heliyatra_update'
     payload = {
         "messaging_product": "whatsapp",
         "to": clean_recipient,
         "type": "template",
         "template": {
-            "name": "hello_world",
+            "name": "heliyatra_update",
             "language": {
                 "code": "en_US"
-            }
+            },
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": status_header[:60]   # Parameter {{1}}
+                        },
+                        {
+                            "type": "text",
+                            "text": details_text[:200]   # Parameter {{2}}
+                        }
+                    ]
+                }
+            ]
         }
     }
 
@@ -147,8 +161,11 @@ def main():
         )
         send_ntfy_alert(urgent_title, urgent_body, priority="urgent")
 
-        # Sends template ping on WhatsApp
-        send_meta_whatsapp_template()
+        # WhatsApp alert
+        send_meta_whatsapp_custom_template(
+            status_header="URGENT: Booking Status Changed!",
+            details_text="Hold notice has changed on the portal. Post-monsoon booking may now be open"
+        )
 
     else:
         # =========================================================================
@@ -163,8 +180,11 @@ def main():
         )
         send_ntfy_alert(digest_title, digest_body, priority="low")
 
-        # Sends WhatsApp template
-        send_meta_whatsapp_template()
+        # WhatsApp hourly digest
+        send_meta_whatsapp_custom_template(
+            status_header="Hourly Check: Not Open Yet",
+            details_text="Booking is currently still on hold with no updates detected"
+        )
 
     print("=" * 60)
     print("MONITOR RUN COMPLETE")

@@ -1,31 +1,95 @@
 """
-HeliYatra Post-Monsoon Watcher via Scrape.do
-Methodology: Strict Baseline String Matching.
-If the known baseline status message changes in ANY way, trigger URGENT alert.
-Otherwise, send the silent 2-hour status digest.
+HeliYatra Post-Monsoon Watcher (Scrape.do + Official Meta WhatsApp Cloud API)
+Includes detailed debug logs for WhatsApp API and Scrape.do responses.
 """
 
 import os
 import sys
+import json
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 
-NTFY_TOPIC = os.getenv("NTFY_TOPIC", "heliyatra_postmonsoon_alert_2026")
 TARGET_URL = "https://heliyatra.irctc.co.in"
 SCRAPEDO_TOKEN = os.getenv("SCRAPEDO_TOKEN", "").strip()
 
+# Meta WhatsApp Cloud API Credentials
+WA_TOKEN = os.getenv("WA_TOKEN", "").strip()
+WA_PHONE_ID = os.getenv("WA_PHONE_ID", "").strip()
+WA_RECIPIENT = os.getenv("WA_RECIPIENT", "").strip()
+
+# Optional fallback push
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
+
 # =========================================================================
 # EXACT CURRENT BASELINE MESSAGE
-# As long as this exact sentence / state is present, booking is NOT open.
-# When IRCTC updates the page for Kedarnath Post-Monsoon, this match will fail
-# and immediately trigger an URGENT alert!
+# When IRCTC changes or removes this hold notice for Kedarnath,
+# the script immediately detects the difference and fires an URGENT WhatsApp alert.
 # =========================================================================
 KNOWN_BASELINE_SNIPPET = "Shri Hemkund Sahib Helicopter ticket bookings are temporarily on hold till further instructions"
 
 
-def send_alert(title: str, message: str, priority: str = "low"):
-    """Sends notification to ntfy.sh with clean ASCII headers."""
+def send_meta_whatsapp(message_text: str):
+    """Sends official WhatsApp message via Meta Cloud API with full debug logging."""
+    print("-" * 50)
+    print("[WHATSAPP] Preparing WhatsApp dispatch via Meta Graph API...")
+
+    if not WA_TOKEN:
+        print("[WHATSAPP ERROR] 'WA_TOKEN' is missing in environment variables!")
+        return False
+    if not WA_PHONE_ID:
+        print("[WHATSAPP ERROR] 'WA_PHONE_ID' is missing in environment variables!")
+        return False
+    if not WA_RECIPIENT:
+        print("[WHATSAPP ERROR] 'WA_RECIPIENT' is missing in environment variables!")
+        return False
+
+    clean_recipient = WA_RECIPIENT.replace("+", "").replace(" ", "").replace("-", "").strip()
+    print(f"[WHATSAPP DEBUG] Sender Phone ID: {WA_PHONE_ID}")
+    print(f"[WHATSAPP DEBUG] Recipient Number: {clean_recipient}")
+    print(f"[WHATSAPP DEBUG] Token Preview: {WA_TOKEN[:8]}...{WA_TOKEN[-4:]}")
+
+    url = f"https://graph.facebook.com/v20.0/{WA_PHONE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WA_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_recipient,
+        "type": "text",
+        "text": {
+            "preview_url": True,
+            "body": message_text
+        }
+    }
+
+    try:
+        print(f"[WHATSAPP DEBUG] POST -> {url}")
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        print(f"[WHATSAPP DEBUG] HTTP Status: {resp.status_code}")
+        print(f"[WHATSAPP DEBUG] Response Body: {resp.text}")
+
+        if resp.status_code in [200, 201]:
+            print("[WHATSAPP SUCCESS] Message successfully delivered to WhatsApp queue!")
+            return True
+        else:
+            print(f"[WHATSAPP FAILED] Meta returned error status {resp.status_code}.")
+            try:
+                err_data = resp.json()
+                print(f"[WHATSAPP ERROR DETAILS] {json.dumps(err_data, indent=2)}")
+            except Exception:
+                pass
+            return False
+    except Exception as e:
+        print(f"[WHATSAPP EXCEPTION] Failed to connect to Meta API: {e}")
+        return False
+
+
+def send_ntfy_fallback(title: str, message: str, priority: str = "low"):
+    """Optional push backup to ntfy.sh"""
+    if not NTFY_TOPIC:
+        return
     try:
         clean_title = title.encode("ascii", "ignore").decode("ascii").strip() or "HeliYatra Alert"
         url = f"https://ntfy.sh/{NTFY_TOPIC}"
@@ -34,30 +98,37 @@ def send_alert(title: str, message: str, priority: str = "low"):
             "Priority": priority,
             "Click": TARGET_URL,
         }
-        resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=15)
-        print(f"[NTFY] Notification pushed ({priority.upper()}): HTTP {resp.status_code}")
+        resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=10)
+        print(f"[NTFY DEBUG] Push status ({priority}): {resp.status_code}")
     except Exception as e:
         print(f"[NTFY ERROR] {e}")
 
 
 def fetch_via_scrapedo(token: str):
-    """Fetches target page through Scrape.do with Indian geo-routing."""
+    """Fetches portal HTML via Scrape.do with Indian IP proxy routing."""
+    print("-" * 50)
+    print("[SCRAPE.DO] Initiating fetch for HeliYatra portal...")
+
     if not token:
-        print("[ERROR] SCRAPEDO_TOKEN not found in environment!")
+        print("[SCRAPE.DO ERROR] 'SCRAPEDO_TOKEN' is missing in environment variables!")
         return None, 401
 
-    print(f"[INFO] Fetching {TARGET_URL} via Scrape.do (Token: {token[:4]}***)...")
     encoded_url = urllib.parse.quote(TARGET_URL, safe="")
-    # Scrape.do API endpoint
     endpoint = f"https://api.scrape.do?token={token}&url={encoded_url}&geoCode=in"
+    print(f"[SCRAPE.DO DEBUG] Token Preview: {token[:6]}... (Routing via India geoCode=in)")
 
-    resp = requests.get(endpoint, timeout=60)
-    print(f"[INFO] Scrape.do HTTP Response: {resp.status_code}")
-    return resp.text, resp.status_code
+    try:
+        resp = requests.get(endpoint, timeout=60)
+        print(f"[SCRAPE.DO DEBUG] HTTP Status: {resp.status_code}")
+        print(f"[SCRAPE.DO DEBUG] Response Payload Length: {len(resp.text)} chars")
+        return resp.text, resp.status_code
+    except Exception as e:
+        print(f"[SCRAPE.DO EXCEPTION] Fetch failed: {e}")
+        return None, 500
 
 
 def extract_visible_notice(soup: BeautifulSoup) -> str:
-    """Extracts the live notice text from the page for the digest."""
+    """Finds marquee / alert banners on the page."""
     candidates = soup.find_all(
         lambda tag: tag.name in ["marquee", "div", "p", "span", "section"] and (
             any(cls in " ".join(tag.get("class", [])).lower() for cls in ["alert", "notice", "news", "announcement", "banner", "marquee"])
@@ -77,22 +148,21 @@ def extract_visible_notice(soup: BeautifulSoup) -> str:
 
 def main():
     print("=" * 60)
-    print(f"Checking HeliYatra: {TARGET_URL}")
+    print("STARTING HELIYATRA MONITOR RUN")
+    print(f"Target URL: {TARGET_URL}")
     print("=" * 60)
 
+    # 1. Fetch portal HTML
     html_content, status_code = fetch_via_scrapedo(SCRAPEDO_TOKEN)
 
     if not html_content or status_code != 200:
-        print(f"[CRITICAL] Portal check failed with status: {status_code}")
-        send_alert(
-            "HeliYatra Check Notice",
-            f"Portal check returned status {status_code}.\n"
-            f"SCRAPEDO_TOKEN in env: {'YES' if SCRAPEDO_TOKEN else 'NO'}\n"
-            f"Next automated check will retry in 2 hours.",
-            priority="low"
+        print(f"[CRITICAL] Portal fetch failed with status code {status_code}.")
+        send_meta_whatsapp(
+            f"⚠️ HeliYatra Monitor Warning:\nPortal check returned HTTP {status_code}. Retrying on next hourly schedule."
         )
         return
 
+    # 2. Parse HTML text
     soup = BeautifulSoup(html_content, "html.parser")
     for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()
@@ -100,36 +170,50 @@ def main():
     page_text = soup.get_text(separator=" ", strip=True)
     live_notice = extract_visible_notice(soup)
 
-    print(f"[SUCCESS] Page loaded successfully! Text length: {len(page_text)} chars.")
-    print(f"[INFO] Current Visible Notice:\n\"{live_notice}\"")
+    print("-" * 50)
+    print(f"[PARSER] Clean text extracted ({len(page_text)} chars).")
+    print(f"[PARSER] Live Notice Banner:\n\"{live_notice}\"")
 
-    # =========================================================================
-    # BASELINE EXACT CHECK:
-    # Does the page still have the exact known baseline text?
-    # =========================================================================
+    # 3. Exact baseline snippet check
+    print("-" * 50)
+    print(f"[DIFF CHECK] Checking for exact known baseline snippet:\n\"{KNOWN_BASELINE_SNIPPET}\"")
     baseline_is_present = KNOWN_BASELINE_SNIPPET.lower() in page_text.lower()
-    print(f"[CHECK] Known Baseline Present: {baseline_is_present}")
+    print(f"[DIFF CHECK RESULT] Baseline Present on Page: {baseline_is_present}")
 
+    # 4. Trigger logic
     if not baseline_is_present:
-        # The baseline snippet is GONE or CHANGED -> Booking might be OPEN or Schedule Updated!
-        print("[TRIGGER] Baseline snippet CHANGED or REMOVED! Dispatching URGENT alert.")
-        send_alert(
-            "URGENT: HeliYatra Portal Changed / Booking Might Be OPEN!",
-            f"The previous hold notice has CHANGED on the website!\n\n"
-            f"Current Site Notice:\n\"{live_notice}\"\n\n"
-            f"Post-monsoon Kedarnath booking may be LIVE! Tap to open portal now.",
-            priority="urgent"
+        # BASELINE IS MISSING OR CHANGED -> BOOKING STATUS HAS CHANGED!
+        print("=" * 60)
+        print("🚨 TRIGGER: BASELINE CHANGED! SENDING URGENT WHATSAPP ALERT! 🚨")
+        print("=" * 60)
+
+        urgent_wa_msg = (
+            "🚨 *URGENT: HELIYATRA PORTAL NOTICE CHANGED!* 🚨\n\n"
+            "The previous hold message is no longer present on the website.\n"
+            "Kedarnath post-monsoon ticket booking may be *OPEN* or updated!\n\n"
+            f"📋 *Live Site Notice:*\n_{live_notice}_\n\n"
+            f"👉 *Open & Book Now:* {TARGET_URL}"
         )
+        send_meta_whatsapp(urgent_wa_msg)
+        send_ntfy_fallback("URGENT: HeliYatra Booking Might Be OPEN!", live_notice, priority="urgent")
+
     else:
-        # Exact same baseline -> Booking is still closed, send normal 6h digest
-        print("[DIGEST] Baseline message still active. Sending 6-hour digest.")
-        send_alert(
-            "HeliYatra 6h Status Digest",
-            f"Current Notice on Site:\n\"{live_notice}\"\n\n"
-            f"Status: Monsoon hold still active (No change on portal).\n"
-            f"Next check in 2 hours.",
-            priority="low"
+        # BASELINE IS STILL PRESENT -> HOURLY DIGEST
+        print("-" * 50)
+        print("[DIGEST] Baseline message still active on site. Sending hourly WhatsApp digest.")
+        
+        digest_wa_msg = (
+            "🚁 *HeliYatra Status Digest*\n\n"
+            "✅ *Status:* Monsoon hold active (No changes detected).\n\n"
+            f"📋 *Current Site Notice:*\n_{live_notice[:250]}_\n\n"
+            "⏳ Next check in 1 hour."
         )
+        send_meta_whatsapp(digest_wa_msg)
+        send_ntfy_fallback("HeliYatra Hourly Digest", live_notice, priority="low")
+
+    print("=" * 60)
+    print("MONITOR RUN COMPLETE")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

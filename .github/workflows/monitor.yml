@@ -25,7 +25,7 @@ jobs:
       - name: Run HeliYatra Monitor
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC || 'heliyatra_postmonsoon_alert_2026' }}
-          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+          SCRAPEDO_TOKEN: ${{ secrets.SCRAPEDO_TOKEN }}
         run: |
           if [ -f ".github/workflows/monitory.py" ]; then
             python .github/workflows/monitory.py

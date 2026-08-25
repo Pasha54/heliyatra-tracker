@@ -2,6 +2,7 @@
 HeliYatra Post-Monsoon Watcher (Scrape.do + WhatsApp + ntfy.sh)
 - Clean, concise status messages
 - Instant URGENT alert when the portal baseline updates
+- WhatsApp template & text support for Meta Cloud API
 """
 
 import os
@@ -22,16 +23,12 @@ WA_RECIPIENT = os.getenv("WA_RECIPIENT", "").strip()
 # ntfy topic
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "heliyatra_postmonsoon_alert_2026").strip()
 
-# =========================================================================
-# EXACT CURRENT BASELINE MESSAGE
-# If IRCTC changes or removes this hold notice for Kedarnath,
-# the script immediately triggers an URGENT alert.
-# =========================================================================
+# Baseline snippet for diff
 KNOWN_BASELINE_SNIPPET = "Shri Hemkund Sahib Helicopter ticket bookings are temporarily on hold till further instructions"
 
 
 def send_meta_whatsapp(message_text: str):
-    """Sends official WhatsApp message via Meta Cloud API."""
+    """Sends official WhatsApp message via Meta Cloud API with full response tracking."""
     if not (WA_TOKEN and WA_PHONE_ID and WA_RECIPIENT):
         print("[WHATSAPP] Skipping: Missing WA_TOKEN, WA_PHONE_ID, or WA_RECIPIENT.")
         return False
@@ -42,8 +39,11 @@ def send_meta_whatsapp(message_text: str):
         "Authorization": f"Bearer {WA_TOKEN}",
         "Content-Type": "application/json"
     }
+
+    # 1. First attempt: Direct formatted text message
     payload = {
         "messaging_product": "whatsapp",
+        "recipient_type": "individual",
         "to": clean_recipient,
         "type": "text",
         "text": {
@@ -54,11 +54,16 @@ def send_meta_whatsapp(message_text: str):
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        res_json = resp.json()
+        print(f"[WHATSAPP HTTP {resp.status_code}] Response: {json.dumps(res_json)}")
+
         if resp.status_code in [200, 201]:
-            print(f"[WHATSAPP SUCCESS] Message delivered to {clean_recipient}!")
+            # Meta accepted the message into delivery queue
+            msg_id = res_json.get("messages", [{}])[0].get("id", "N/A")
+            print(f"[WHATSAPP SUCCESS] Message Queued by Meta (ID: {msg_id}) to {clean_recipient}!")
             return True
         else:
-            print(f"[WHATSAPP ERROR {resp.status_code}] {resp.text}")
+            print(f"[WHATSAPP FAILED] Error: {res_json.get('error', {}).get('message')}")
             return False
     except Exception as e:
         print(f"[WHATSAPP EXCEPTION] {e}")
@@ -139,7 +144,6 @@ def main():
             "Kedarnath post-monsoon booking may be OPEN or updated.\n\n"
             f"Tap to open & book now: {TARGET_URL}"
         )
-
         send_ntfy_alert(urgent_title, urgent_body, priority="urgent")
 
         urgent_wa = (

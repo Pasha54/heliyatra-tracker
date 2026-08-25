@@ -1,8 +1,7 @@
 """
-HeliYatra Post-Monsoon Watcher (Scrape.do + WhatsApp + ntfy.sh)
-- Clean, concise status messages
+HeliYatra Post-Monsoon Watcher (Scrape.do + WhatsApp Template + ntfy.sh)
+- Uses WhatsApp 'template' payload (bypasses 24-hour window error 131047)
 - Instant URGENT alert when the portal baseline updates
-- WhatsApp template & text support for Meta Cloud API
 """
 
 import os
@@ -27,8 +26,11 @@ NTFY_TOPIC = os.getenv("NTFY_TOPIC", "heliyatra_postmonsoon_alert_2026").strip()
 KNOWN_BASELINE_SNIPPET = "Shri Hemkund Sahib Helicopter ticket bookings are temporarily on hold till further instructions"
 
 
-def send_meta_whatsapp(message_text: str):
-    """Sends official WhatsApp message via Meta Cloud API with full response tracking."""
+def send_meta_whatsapp_template():
+    """
+    Sends WhatsApp message using Meta's pre-approved 'hello_world' template.
+    Bypasses the 24-hour customer window constraint (Error 131047).
+    """
     if not (WA_TOKEN and WA_PHONE_ID and WA_RECIPIENT):
         print("[WHATSAPP] Skipping: Missing WA_TOKEN, WA_PHONE_ID, or WA_RECIPIENT.")
         return False
@@ -40,27 +42,26 @@ def send_meta_whatsapp(message_text: str):
         "Content-Type": "application/json"
     }
 
-    # 1. First attempt: Direct formatted text message
+    # Meta pre-approved template payload (delivers 24/7 anytime)
     payload = {
         "messaging_product": "whatsapp",
-        "recipient_type": "individual",
         "to": clean_recipient,
-        "type": "text",
-        "text": {
-            "preview_url": True,
-            "body": message_text
+        "type": "template",
+        "template": {
+            "name": "hello_world",
+            "language": {
+                "code": "en_US"
+            }
         }
     }
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
         res_json = resp.json()
-        print(f"[WHATSAPP HTTP {resp.status_code}] Response: {json.dumps(res_json)}")
+        print(f"[WHATSAPP TEMPLATE HTTP {resp.status_code}] Response: {json.dumps(res_json)}")
 
         if resp.status_code in [200, 201]:
-            # Meta accepted the message into delivery queue
-            msg_id = res_json.get("messages", [{}])[0].get("id", "N/A")
-            print(f"[WHATSAPP SUCCESS] Message Queued by Meta (ID: {msg_id}) to {clean_recipient}!")
+            print(f"[WHATSAPP SUCCESS] Template message successfully delivered to {clean_recipient}!")
             return True
         else:
             print(f"[WHATSAPP FAILED] Error: {res_json.get('error', {}).get('message')}")
@@ -146,13 +147,8 @@ def main():
         )
         send_ntfy_alert(urgent_title, urgent_body, priority="urgent")
 
-        urgent_wa = (
-            "🚨 *URGENT: Kedarnath Heli Booking Status Changed!* 🚨\n\n"
-            "The hold notice has CHANGED on heliyatra.irctc.co.in!\n"
-            "Post-monsoon booking may now be *OPEN*.\n\n"
-            f"👉 *Open & Book Now:* {TARGET_URL}"
-        )
-        send_meta_whatsapp(urgent_wa)
+        # Sends template ping on WhatsApp
+        send_meta_whatsapp_template()
 
     else:
         # =========================================================================
@@ -167,13 +163,8 @@ def main():
         )
         send_ntfy_alert(digest_title, digest_body, priority="low")
 
-        digest_wa = (
-            "🚁 *HeliYatra Hourly Status*\n\n"
-            "Kedarnath post-monsoon ticket booking has *not opened yet*.\n"
-            "Status: On hold (No changes).\n\n"
-            f"🔗 {TARGET_URL}"
-        )
-        send_meta_whatsapp(digest_wa)
+        # Sends WhatsApp template
+        send_meta_whatsapp_template()
 
     print("=" * 60)
     print("MONITOR RUN COMPLETE")

@@ -2,7 +2,7 @@ name: HeliYatra 1-Hour Cron Watcher
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '52 * * * *'
   workflow_dispatch:
 
 jobs:
